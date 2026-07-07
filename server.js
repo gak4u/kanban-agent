@@ -6,6 +6,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -16,6 +17,12 @@ const CONFIG_PATH = process.env.PROJECTS_CONFIG || DEFAULT_CONFIG_PATH;
 // Relative paths in the config resolve against the config file's directory,
 // so the shipped example can point at examples/demo-project.
 const CONFIG_DIR = path.dirname(path.resolve(CONFIG_PATH));
+// Hosted mode (items 001/003): server-managed projects live under the data
+// dir. When data/projects.json is absent the cockpit is purely local — none
+// of the hosted paths below activate.
+const DATA_DIR = process.env.KANBAN_DATA_DIR || path.join(ROOT, 'data');
+const REGISTRY_PATH = path.join(DATA_DIR, 'projects.json');
+const MANAGED_PROJECTS_DIR = path.join(DATA_DIR, 'projects');
 
 // First run: seed projects.json from the example so a fresh clone shows the
 // demo board immediately. Only the default location — an explicit
@@ -68,6 +75,26 @@ function hasQueue(projectDir) {
   return isDir(wi) && STATUSES.some((s) => isDir(path.join(wi, s)));
 }
 
+// Non-archived projects from the hosted registry (written by
+// server/lib/projects.js), shown alongside the filesystem-configured ones.
+function registryProjects() {
+  let reg;
+  try {
+    reg = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8'));
+  } catch {
+    return []; // no registry → local-only mode
+  }
+  if (!Array.isArray(reg.projects)) return [];
+  return reg.projects
+    .filter((p) => p && p.name && !p.archived)
+    .map((p) => ({
+      name: String(p.name),
+      path: path.join(MANAGED_PROJECTS_DIR, String(p.name)),
+      discovered: false,
+      managed: true,
+    }));
+}
+
 function resolveProjects() {
   const cfg = loadConfig();
   const byPath = new Map();
@@ -76,8 +103,14 @@ function resolveProjects() {
   for (const p of cfg.projects) {
     const abs = path.resolve(CONFIG_DIR, String(p.path));
     if (byPath.has(abs)) continue;
-    const proj = { name: String(p.name || path.basename(abs)), path: abs, discovered: false };
+    const proj = { name: String(p.name || path.basename(abs)), path: abs, discovered: false, managed: false };
     byPath.set(abs, proj);
+    out.push(proj);
+  }
+
+  for (const proj of registryProjects()) {
+    if (byPath.has(proj.path)) continue;
+    byPath.set(proj.path, proj);
     out.push(proj);
   }
 
@@ -93,7 +126,7 @@ function resolveProjects() {
       if (!e.isDirectory()) continue;
       const abs = path.join(absRoot, e.name);
       if (byPath.has(abs) || !hasQueue(abs)) continue;
-      const proj = { name: e.name, path: abs, discovered: true };
+      const proj = { name: e.name, path: abs, discovered: true, managed: false };
       byPath.set(abs, proj);
       out.push(proj);
     }
@@ -233,6 +266,7 @@ function scanProject(proj) {
     name: proj.name,
     path: proj.path,
     discovered: proj.discovered,
+    managed: proj.managed || false,
     exists: hasQueue(proj.path),
     counts,
     total: STATUSES.reduce((n, s) => n + counts[s], 0),
@@ -396,6 +430,93 @@ function apiItem(url, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Admin API (hosted mode) — token-gated writes; the board itself stays
+// unauthenticated read-only. The user/project stores are ES modules, so this
+// CommonJS server pulls them in via cached dynamic import().
+// ---------------------------------------------------------------------------
+
+const libCache = new Map(); // repo-relative path -> import() promise
+function adminLib(rel) {
+  if (!libCache.has(rel)) libCache.set(rel, import(pathToFileURL(path.join(ROOT, rel)).href));
+  return libCache.get(rel);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 1024 * 1024) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+async function apiAdmin(req, res, url) {
+  const users = await adminLib('server/lib/users.js');
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  const user = m ? users.verifyToken(m[1].trim()) : null;
+  if (!user) return sendJson(res, 401, { error: 'unauthorized: missing, invalid or revoked token' });
+  if (user.role !== 'admin') {
+    return sendJson(res, 403, { error: `admin required — "${user.username}" has role "${user.role}"` });
+  }
+
+  let body = {};
+  if (req.method === 'POST') {
+    try {
+      body = JSON.parse((await readBody(req)) || '{}');
+    } catch {
+      return sendJson(res, 400, { error: 'invalid JSON body' });
+    }
+  }
+
+  try {
+    switch (`${req.method} ${url.pathname}`) {
+      case 'GET /api/admin/users':
+        return sendJson(res, 200, { users: users.listUsers() });
+      case 'POST /api/admin/users':
+        // {user, token} — the only time the token is ever visible
+        return sendJson(res, 200, users.createUser({ username: body.username, email: body.email || '', role: body.role }));
+      case 'POST /api/admin/users/revoke':
+        return sendJson(res, 200, { user: users.revokeUser(String(body.username || '')) });
+      case 'POST /api/admin/users/rotate':
+        return sendJson(res, 200, { username: String(body.username || ''), token: users.rotateToken(String(body.username || '')) });
+      case 'GET /api/admin/projects': {
+        const registry = await adminLib('server/lib/projects.js');
+        return sendJson(res, 200, { projects: registry.listRegistry({ includeArchived: true }) });
+      }
+      case 'POST /api/admin/projects': {
+        const registry = await adminLib('server/lib/projects.js');
+        const { project, dir } = registry.createProject({
+          name: body.name,
+          gitUrl: body.git_url || undefined,
+          createdBy: user.username,
+        });
+        // Same scaffold the MCP create_project applies (queue dirs + prompts).
+        const { attachWorkflow } = await adminLib('mcp/core.js');
+        attachWorkflow({ project_path: dir, project_name: project.name });
+        return sendJson(res, 200, { project, path: dir });
+      }
+      case 'POST /api/admin/projects/archive': {
+        const registry = await adminLib('server/lib/projects.js');
+        return sendJson(res, 200, { project: registry.archiveProject(String(body.name || '')) });
+      }
+      default:
+        return sendJson(res, 404, { error: 'unknown admin endpoint' });
+    }
+  } catch (err) {
+    return sendJson(res, 400, { error: err.message });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // SSE + filesystem watching
 // ---------------------------------------------------------------------------
 
@@ -516,6 +637,14 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/api/projects') return apiProjects(res);
     if (url.pathname === '/api/item') return apiItem(url, res);
     if (url.pathname === '/api/events') return apiEvents(req, res);
+    if (url.pathname.startsWith('/api/admin/')) {
+      return void apiAdmin(req, res, url).catch((err) => {
+        console.error(`[admin] ${req.url}: ${err.stack || err}`);
+        if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });
+        else res.end();
+      });
+    }
+    if (url.pathname === '/admin') return serveStatic('/admin.html', res);
     return serveStatic(url.pathname, res);
   } catch (err) {
     console.error(`[request] ${req.url}: ${err.stack || err}`);

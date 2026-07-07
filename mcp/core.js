@@ -545,7 +545,8 @@ hand-rolled file operations.
 // Tool implementations
 // ---------------------------------------------------------------------------
 
-function attachWorkflow(args) {
+// Exported: the cockpit's admin API applies the same scaffold on project creation.
+export function attachWorkflow(args) {
   const projectPath = resolveProjectDir(args);
   const projectName = requireString(args, 'project_name', { optional: true }) || path.basename(projectPath);
   const verifyCommand = requireString(args, 'verify_command', { optional: true });

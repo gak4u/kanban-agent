@@ -128,6 +128,15 @@ Requests without a valid token get a 401. The server itself speaks plain HTTP â€
 for anything beyond a trusted network, put nginx (or any TLS-terminating
 reverse proxy) in front.
 
+**What tokens gate:** writes and administration. Reading the cockpit board is
+deliberately unauthenticated, exactly as in local mode â€” anyone who can reach
+the dashboard can watch the queues. Tokens authenticate MCP tool calls and the
+admin surface: the cockpit serves an admin panel at `/admin` (users: create /
+revoke / rotate tokens; projects: create / archive) backed by admin-only
+`/api/admin/*` endpoints; non-admin tokens get a 403. Server-managed projects
+appear on the dashboard alongside locally configured ones, tagged
+`server-managed`.
+
 ### Attach the workflow to a project
 
 1. Call `attach_workflow` with the project's absolute path (optionally

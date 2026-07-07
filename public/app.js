@@ -93,7 +93,7 @@
       </div>`
     ).join('');
     return `<a class="project-card" href="#/project/${encodeURIComponent(p.name)}">
-      <h2>${esc(p.name)} ${p.discovered ? '<span class="tag">auto</span>' : ''}</h2>
+      <h2>${esc(p.name)} ${p.managed ? '<span class="tag managed">server-managed</span>' : ''}${p.discovered ? '<span class="tag">auto</span>' : ''}</h2>
       <div class="path">${esc(p.path)}</div>
       <div class="stat-row">${stats}</div>
       <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${pct}%"></span></div>
@@ -105,11 +105,32 @@
     </a>`;
   }
 
+  // Every in-progress item across all projects: user → #NNN title (project).
+  function claimsStrip() {
+    const claims = [];
+    for (const p of state.projects || []) {
+      for (const it of (p.items && p.items['in-progress']) || []) {
+        claims.push({ user: it.claimedBy, id: it.id, title: it.title, project: p.name });
+      }
+    }
+    if (!claims.length) return '';
+    const rows = claims.map(
+      (c) => `<li><a href="#/project/${encodeURIComponent(c.project)}">
+        <span class="who">${esc(c.user || '—')}</span> → #${esc(c.id)} ${esc(c.title)}
+        <span class="proj">(${esc(c.project)})</span></a></li>`
+    );
+    return `<div class="claims-strip">
+      <span class="lbl">Active claims</span>
+      <ul>${rows.join('')}</ul>
+    </div>`;
+  }
+
   function renderOverview() {
     const projects = state.projects || [];
     document.title = 'Kanban Agent';
     app.innerHTML = `
       <div class="page-title">Projects <span class="sub">${projects.length} tracked</span></div>
+      ${claimsStrip()}
       ${projects.length ? `<div class="project-grid">${projects.map(projectCard).join('')}</div>` : '<p class="empty">No projects configured or discovered. Edit <code>projects.json</code>.</p>'}
     `;
   }
@@ -125,6 +146,15 @@
     if (it.dependsOn) badges.push(`<span class="badge chip">depends on #${esc(it.dependsOn)}</span>`);
     if (it.needsMigration) badges.push(`<span class="badge">migration</span>`);
     if (it.parseError) badges.push(`<span class="badge">parse error</span>`);
+    if (it.createdBy) badges.push(`<span class="badge user" title="created by ${esc(it.createdBy)}">by ${esc(it.createdBy)}</span>`);
+    // In-progress cards show the claimer prominently (line below); elsewhere it's a chip.
+    if (it.claimedBy && it.status !== 'in-progress') {
+      badges.push(`<span class="badge user" title="claimed by ${esc(it.claimedBy)}">claimed: ${esc(it.claimedBy)}</span>`);
+    }
+    const claimerLine =
+      it.status === 'in-progress' && it.claimedBy
+        ? `<div class="claimer" title="claimed by ${esc(it.claimedBy)}"><span class="avatar">${esc(it.claimedBy[0].toUpperCase())}</span>${esc(it.claimedBy)}</div>`
+        : '';
 
     const checks = it.checks && it.checks.total
       ? `<span class="checks${it.checks.done === it.checks.total ? ' full' : ''}">${it.checks.done}/${it.checks.total} ✓</span>`
@@ -136,6 +166,7 @@
 
     return `<button class="card" data-status="${esc(it.status)}" data-file="${esc(it.file)}">
       <div class="top"><span class="num">#${esc(it.id)}</span><span class="title">${esc(it.title)}</span></div>
+      ${claimerLine}
       <div class="badges">${badges.join('')}</div>
       ${blockedLine}
       <div class="meta">${checks}<span title="last activity">${relTime(it.mtime)}</span></div>

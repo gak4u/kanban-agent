@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin — Kanban Agent</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='3.5' height='10' rx='1' fill='%233987e5'/%3E%3Crect x='6.25' y='3' width='3.5' height='7' rx='1' fill='%23fab219'/%3E%3Crect x='11.5' y='3' width='3.5' height='4' rx='1' fill='%230ca30c'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="3" width="3.5" height="10" rx="1" fill="#3987e5"/><rect x="6.25" y="3" width="3.5" height="7" rx="1" fill="#fab219"/><rect x="11.5" y="3" width="3.5" height="4" rx="1" fill="#0ca30c"/></svg>
+      Kanban Agent <span class="admin-crumb">/ admin</span>
+    </a>
+    <span id="auth-badge" class="live-badge">no token</span>
+  </header>
+
+  <main class="admin">
+    <section class="admin-section">
+      <h2>Admin token</h2>
+      <p class="hint">Stored in this browser only (localStorage), sent as <code>Authorization: Bearer</code>.
+        The board itself stays readable without a token — tokens gate admin writes.</p>
+      <form id="token-form" class="admin-form">
+        <input id="token-input" type="password" placeholder="paste admin token" autocomplete="off">
+        <button type="submit">Use token</button>
+        <button type="button" id="token-clear" class="ghost">Forget</button>
+      </form>
+    </section>
+
+    <div id="error-banner" class="error-banner" hidden></div>
+    <div id="token-reveal" class="token-reveal" hidden></div>
+
+    <section class="admin-section">
+      <h2>Users</h2>
+      <table class="admin-table" id="users-table">
+        <thead><tr><th>username</th><th>email</th><th>role</th><th>created</th><th></th></tr></thead>
+        <tbody><tr><td colspan="5" class="empty">enter an admin token above</td></tr></tbody>
+      </table>
+      <form id="user-form" class="admin-form">
+        <input name="username" placeholder="username ([a-z0-9-_]{2,32})" required>
+        <input name="email" type="email" placeholder="email (optional)">
+        <select name="role"><option value="member">member</option><option value="admin">admin</option></select>
+        <button type="submit">Create user</button>
+      </form>
+    </section>
+
+    <section class="admin-section">
+      <h2>Projects</h2>
+      <table class="admin-table" id="projects-table">
+        <thead><tr><th>name</th><th>git url</th><th>created by</th><th>created</th><th></th></tr></thead>
+        <tbody><tr><td colspan="5" class="empty">enter an admin token above</td></tr></tbody>
+      </table>
+      <form id="project-form" class="admin-form">
+        <input name="name" placeholder="project name ([a-z0-9-_]{2,32})" required>
+        <input name="git_url" placeholder="git URL to clone (optional)">
+        <button type="submit">Create project</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/admin.js"></script>
+</body>
+</html>
