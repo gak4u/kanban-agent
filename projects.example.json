@@ -1,0 +1,6 @@
+{
+  "projects": [
+    { "name": "Demo Project", "path": "examples/demo-project" }
+  ],
+  "autoDiscoverRoots": ["/absolute/path/to/your/projects"]
+}

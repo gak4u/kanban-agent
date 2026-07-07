@@ -1,0 +1,29 @@
+{
+  "name": "kanban-agent",
+  "version": "0.1.0",
+  "description": "File-based kanban for coding-agent fleets: folder-is-the-status work queues in plain markdown, a zero-dependency live dashboard, and an MCP server to operate them",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gak4u/kanban-agent.git"
+  },
+  "homepage": "https://github.com/gak4u/kanban-agent#readme",
+  "bugs": {
+    "url": "https://github.com/gak4u/kanban-agent/issues"
+  },
+  "keywords": [
+    "agents",
+    "kanban",
+    "mcp",
+    "claude-code",
+    "task-queue",
+    "dashboard"
+  ],
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

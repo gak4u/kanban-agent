@@ -1,0 +1,3 @@
+node_modules/
+# Local config — seeded from projects.example.json on first start.
+projects.json
