@@ -281,6 +281,53 @@ function setFrontmatterStatus(text, status) {
   return text;
 }
 
+// Updates key in the frontmatter, or inserts it before the closing --- when
+// missing. No-frontmatter files are returned untouched (lenient, like the rest).
+function setFrontmatterField(text, key, value) {
+  const lines = text.split(/\r?\n/);
+  if (!/^---\s*$/.test(lines[0] || '')) return text;
+  for (let i = 1; i < lines.length; i++) {
+    if (new RegExp(`^${key}\\s*:`).test(lines[i])) {
+      lines[i] = `${key}: ${value}`;
+      return lines.join('\n');
+    }
+    if (/^---\s*$/.test(lines[i])) {
+      lines.splice(i, 0, `${key}: ${value}`);
+      return lines.join('\n');
+    }
+  }
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// Attribution + server-side git (hosted mode only)
+// ---------------------------------------------------------------------------
+
+// git needs "Name <email>"; users without an email get a synthetic local one.
+function authorString(user) {
+  return `${user.username} <${user.email || `${user.username}@kanban-agent.local`}>`;
+}
+
+// Server-side queue commits happen only for server-managed projects, i.e. when
+// an authenticated user addresses the project by registry name.
+function isHostedProject(args, context) {
+  return Boolean(context?.user && args?.project);
+}
+
+// Commit the queue mutation in the project tree. The committer is the repo-local
+// server identity (set at create_project); `author` carries the human. Queue
+// state on disk is the source of truth, so a failed commit is logged, not fatal.
+function gitCommitQueue(projectPath, message, author) {
+  try {
+    execFileSync('git', ['-C', projectPath, 'add', '-A', '--', 'work-items'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['-C', projectPath, 'commit', '-m', message, `--author=${author}`], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    console.error(`[queue-commit] ${projectPath}: ${String(err.stderr || err.message).trim()}`);
+  }
+}
+
 function asBullet(label, value) {
   const v = String(value ?? '').trim();
   if (!v.includes('\n')) return `- ${label}: ${v}`;
@@ -476,6 +523,8 @@ Read \`./work-items/README.md\` first for the protocol. Then run this loop:
 - If a build or verification fails and you cannot fix it within the item's scope,
   move the item to \`blocked/\` with a \`## Blocked\` note and continue with the next.
 - Don't leave test data behind — remove anything you created while verifying.
+- In hosted mode, commit your code with \`--author\` set to the \`commit_author\`
+  returned by \`complete_item\`, and push before/with completion.
 `;
 }
 
@@ -581,7 +630,7 @@ function queueStatus(args) {
   return { project_path: projectPath, counts, total: STATUSES.reduce((n, s) => n + counts[s], 0), items };
 }
 
-function createWorkItem(args) {
+function createWorkItem(args, context) {
   const projectPath = resolveProjectDir(args);
   const title = requireString(args, 'title');
   const type = requireString(args, 'type');
@@ -612,6 +661,7 @@ function createWorkItem(args) {
   if (fs.existsSync(filePath)) throw fail(`file already exists: ${filePath}`);
 
   const fm = ['---', `id: ${nnn}`, `title: ${title.replace(/\r?\n/g, ' ')}`, `type: ${type}`, `priority: ${priority}`, `created: ${new Date().toISOString().slice(0, 10)}`, 'status: pending'];
+  if (context?.user) fm.push(`created_by: ${context.user.username}`);
   if (args.depends_on !== undefined && args.depends_on !== null && args.depends_on !== '') {
     fm.push(`depends_on: ${String(normalizeId(args.depends_on)).padStart(3, '0')}`);
   }
@@ -641,10 +691,13 @@ function createWorkItem(args) {
   sections.push('', '## Result (worker fills in)', '- Commit/branch:', '- What changed:', '- Verification output:', '');
 
   fs.writeFileSync(filePath, sections.join('\n'));
+  if (isHostedProject(args, context)) {
+    gitCommitQueue(projectPath, `chore(queue): create work-item ${nnn} — ${slugify(title)} [work-item ${nnn}]`, authorString(context.user));
+  }
   return { id: nnn, file, path: filePath, status: 'pending' };
 }
 
-function claimNextItem(args) {
+function claimNextItem(args, context) {
   const projectPath = resolveProjectDir(args);
   const pending = listItems(projectPath, 'pending');
   if (pending.length === 0) {
@@ -656,15 +709,19 @@ function claimNextItem(args) {
   if (fs.existsSync(to)) throw fail(`cannot claim ${item.file}: already exists in in-progress/`);
   const via = moveItem(projectPath, from, to);
   let text = fs.readFileSync(to, 'utf8');
-  const updated = setFrontmatterStatus(text, 'in-progress');
+  let updated = setFrontmatterStatus(text, 'in-progress');
+  if (context?.user) updated = setFrontmatterField(updated, 'claimed_by', context.user.username);
   if (updated !== text) {
     fs.writeFileSync(to, updated);
     text = updated;
   }
+  if (isHostedProject(args, context)) {
+    gitCommitQueue(projectPath, `chore(queue): claim work-item ${item.id} [work-item ${item.id}]`, authorString(context.user));
+  }
   return { id: item.id, file: item.file, path: to, status: 'in-progress', moved_via: via, markdown: text };
 }
 
-function completeItem(args) {
+function completeItem(args, context) {
   const projectPath = resolveProjectDir(args);
   const num = normalizeId(args.id);
   const what = requireString(args, 'what_changed');
@@ -678,16 +735,43 @@ function completeItem(args) {
   }
 
   let text = fs.readFileSync(found.path, 'utf8');
+  const { fields } = splitFrontmatter(text);
   text = fillResultSection(text, { commit, what_changed: what, verification });
   text = setFrontmatterStatus(text, 'done');
   fs.writeFileSync(found.path, text);
 
   const to = workItemsDir(projectPath, 'done', found.file);
   const via = moveItem(projectPath, found.path, to);
-  return { id: found.file.match(/^(\d+)/)[1], file: found.file, path: to, status: 'done', moved_via: via };
+  const id = found.file.match(/^(\d+)/)[1];
+  const result = { id, file: found.file, path: to, status: 'done', moved_via: via };
+
+  if (context?.user) {
+    // The completion commit is authored by the item's CREATOR — and the agent
+    // is handed the same author string for its own code commits.
+    const creatorName = fields.created_by || context.user.username;
+    const creator = libCall(() => usersLib.listUsers()).find((u) => u.username === creatorName);
+    const author = authorString(creator || { username: creatorName, email: '' });
+    result.commit_author = author;
+    if (isHostedProject(args, context)) {
+      gitCommitQueue(projectPath, `chore(queue): complete work-item ${id} [work-item ${id}]`, author);
+      const { project } = libCall(() => projectRegistry.resolveProject(args.project));
+      if (project.gitUrl) {
+        // Push failure never fails the completion — the queue move already
+        // happened; the caller just learns the push needs attention.
+        try {
+          execFileSync('git', ['-C', projectPath, 'push', 'origin', 'HEAD'], { stdio: ['ignore', 'pipe', 'pipe'] });
+          result.pushed = true;
+        } catch (err) {
+          result.pushed = false;
+          result.push_error = String(err.stderr || err.message).trim();
+        }
+      }
+    }
+  }
+  return result;
 }
 
-function blockItem(args) {
+function blockItem(args, context) {
   const projectPath = resolveProjectDir(args);
   const num = normalizeId(args.id);
   const reason = requireString(args, 'reason');
@@ -705,7 +789,11 @@ function blockItem(args) {
 
   const to = workItemsDir(projectPath, 'blocked', found.file);
   const via = moveItem(projectPath, found.path, to);
-  return { id: found.file.match(/^(\d+)/)[1], file: found.file, path: to, status: 'blocked', from: found.status, moved_via: via };
+  const id = found.file.match(/^(\d+)/)[1];
+  if (isHostedProject(args, context)) {
+    gitCommitQueue(projectPath, `chore(queue): block work-item ${id} [work-item ${id}]`, authorString(context.user));
+  }
+  return { id, file: found.file, path: to, status: 'blocked', from: found.status, moved_via: via };
 }
 
 function getItem(args) {

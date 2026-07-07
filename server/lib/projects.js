@@ -72,6 +72,12 @@ export function createProject({ name, gitUrl, createdBy } = {}) {
   } else {
     fs.mkdirSync(dir);
     git(dir, 'init');
+  }
+  // Repo-local committer identity: queue mutations are committed by the server
+  // (with --author carrying the human), regardless of the host's git config.
+  git(dir, 'config', 'user.name', 'kanban-agent server');
+  git(dir, 'config', 'user.email', 'server@kanban-agent.local');
+  if (!gitUrl) {
     fs.writeFileSync(path.join(dir, 'README.md'), `# ${name}\n\nServer-managed kanban-agent project.\n`);
     git(dir, 'add', 'README.md');
     git(dir, 'commit', '-m', `init: server-managed project ${name}`);

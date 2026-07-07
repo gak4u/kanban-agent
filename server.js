@@ -167,6 +167,8 @@ function parseItem(status, dir, file) {
     created: null,
     stacksOn: null,
     dependsOn: null,
+    createdBy: null,
+    claimedBy: null,
     needsMigration: false,
     checks: { done: 0, total: 0 },
     summary: null,
@@ -194,6 +196,8 @@ function parseItem(status, dir, file) {
     if (fields.created) item.created = fields.created;
     if (fields.stacks_on) item.stacksOn = fields.stacks_on;
     if (fields.depends_on) item.dependsOn = fields.depends_on;
+    if (fields.created_by) item.createdBy = fields.created_by;
+    if (fields.claimed_by) item.claimedBy = fields.claimed_by;
     if (fields.needs_migration) item.needsMigration = /^(true|yes|1)$/i.test(fields.needs_migration);
     // fields.status is deliberately ignored: the folder is authoritative.
     item.checks = {
