@@ -108,6 +108,26 @@ claude mcp add --scope user kanban-agent -- node /path/to/kanban-agent/mcp/serve
 
 (`claude mcp list` should then show `kanban-agent … ✔ Connected`.)
 
+### Hosted MCP (Streamable HTTP, multi-user)
+
+The same tool set can be served over the MCP Streamable HTTP transport so a
+team's agents share one server, each authenticated by a per-user Bearer token:
+
+```sh
+node server/bootstrap.js     # once — creates the user store, prints the admin token
+npm run mcp-http             # serves http://0.0.0.0:4401/mcp (port: KANBAN_MCP_PORT)
+```
+
+Each user registers the server with their own token:
+
+```sh
+claude mcp add --transport http kanban-agent http://<server>:4401/mcp --header "Authorization: Bearer <token>"
+```
+
+Requests without a valid token get a 401. The server itself speaks plain HTTP —
+for anything beyond a trusted network, put nginx (or any TLS-terminating
+reverse proxy) in front.
+
 ### Attach the workflow to a project
 
 1. Call `attach_workflow` with the project's absolute path (optionally

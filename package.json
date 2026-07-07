@@ -21,7 +21,8 @@
   ],
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "mcp-http": "node server/mcp-http.js"
   },
   "engines": {
     "node": ">=20"
