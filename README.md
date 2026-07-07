@@ -108,34 +108,30 @@ claude mcp add --scope user kanban-agent -- node /path/to/kanban-agent/mcp/serve
 
 (`claude mcp list` should then show `kanban-agent … ✔ Connected`.)
 
-### Hosted MCP (Streamable HTTP, multi-user)
+### Hosted mode (one server for a team)
 
 The same tool set can be served over the MCP Streamable HTTP transport so a
-team's agents share one server, each authenticated by a per-user Bearer token:
+team's agents share one server: per-user Bearer tokens (roles `admin` /
+`member`), server-managed projects operated by name, `created_by`/`claimed_by`
+attribution with completion commits authored as the item's creator (and pushed
+to the project's origin), an `/admin` panel for users + projects, and user
+chips / an active-claims strip on the dashboard.
 
 ```sh
 node server/bootstrap.js     # once — creates the user store, prints the admin token
 npm run mcp-http             # serves http://0.0.0.0:4401/mcp (port: KANBAN_MCP_PORT)
 ```
 
-Each user registers the server with their own token:
+Each user registers the server with their own token (stdio one-liner above
+stays the local single-user path):
 
 ```sh
 claude mcp add --transport http kanban-agent http://<server>:4401/mcp --header "Authorization: Bearer <token>"
 ```
 
-Requests without a valid token get a 401. The server itself speaks plain HTTP —
-for anything beyond a trusted network, put nginx (or any TLS-terminating
-reverse proxy) in front.
-
-**What tokens gate:** writes and administration. Reading the cockpit board is
-deliberately unauthenticated, exactly as in local mode — anyone who can reach
-the dashboard can watch the queues. Tokens authenticate MCP tool calls and the
-admin surface: the cockpit serves an admin panel at `/admin` (users: create /
-revoke / rotate tokens; projects: create / archive) backed by admin-only
-`/api/admin/*` endpoints; non-admin tokens get a 403. Server-managed projects
-appear on the dashboard alongside locally configured ones, tagged
-`server-managed`.
+Reading the cockpit board stays unauthenticated — tokens gate writes and
+administration. Architecture, team quickstart, attribution/push flow and ops
+notes: **[docs/hosted.md](docs/hosted.md)**.
 
 ### Attach the workflow to a project
 
@@ -165,7 +161,19 @@ appear on the dashboard alongside locally configured ones, tagged
 | `complete_item(project_path, id, what_changed, verification, commit?)` | Fill `## Result`, move to `done/`. |
 | `block_item(project_path, id, reason)` | Append a `## Blocked` note, move to `blocked/`. |
 | `get_item(project_path, id)` | Status + raw markdown, searching all folders. |
-| `list_projects()` | Every tracked/discovered project with status counts. |
+| `list_projects()` | Every tracked/discovered project with status counts (hosted mode: the server registry). |
+
+Queue tools accept `project_path` (absolute path, local mode) **or** `project`
+(server-managed project name, hosted mode). Admin tools — hosted mode only,
+`admin` role required:
+
+| Tool | What it does |
+| --- | --- |
+| `create_project(name, git_url?)` | Clone or init a git tree under `data/projects/<name>/` + scaffold the queue. |
+| `archive_project(name)` | Hide a project from lists; files are never deleted. |
+| `create_user(username, email?, role)` | Create a user; returns the one-time API token. |
+| `revoke_user(username)` | Invalidate a user's token immediately. |
+| `rotate_token(username)` | Issue a new token (returned once), killing the old one. |
 
 | Prompt | What it returns |
 | --- | --- |

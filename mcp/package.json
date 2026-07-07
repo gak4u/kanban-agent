@@ -1,6 +1,6 @@
 {
   "name": "kanban-agent-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server (stdio) that attaches and operates file-based kanban work-item queues (work-items/{pending,in-progress,blocked,done})",
   "license": "MIT",
   "repository": {

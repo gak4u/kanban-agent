@@ -1,6 +1,6 @@
 {
   "name": "kanban-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "File-based kanban for coding-agent fleets: folder-is-the-status work queues in plain markdown, a zero-dependency live dashboard, and an MCP server to operate them",
   "license": "MIT",
   "repository": {

@@ -1188,7 +1188,7 @@ For each request:
 // ---------------------------------------------------------------------------
 
 export function buildServer(context = { user: null }) {
-  const server = new Server({ name: 'kanban-agent', version: '0.1.0' }, { capabilities: { tools: {}, prompts: {} } });
+  const server = new Server({ name: 'kanban-agent', version: '0.2.0' }, { capabilities: { tools: {}, prompts: {} } });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),

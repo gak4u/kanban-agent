@@ -1,6 +1,6 @@
 {
   "name": "kanban-agent-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hosted-mode server modules (user registry, tokens) — zero-dependency ES modules",
   "license": "MIT",
   "repository": {
