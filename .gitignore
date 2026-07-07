@@ -1,3 +1,5 @@
 node_modules/
 # Local config — seeded from projects.example.json on first start.
 projects.json
+# Hosted-mode data (user registry with token hashes) — never committed.
+data/
