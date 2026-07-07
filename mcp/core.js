@@ -19,6 +19,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// Hosted-mode stores (side-effect free to import; local stdio mode never
+// touches them unless a hosted-only tool or a `project` name is used).
+import * as usersLib from '../server/lib/users.js';
+import * as projectRegistry from '../server/lib/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -77,6 +81,39 @@ function normalizeId(id) {
   const s = String(id ?? '').trim();
   if (!/^\d{1,6}$/.test(s)) throw fail(`invalid item id (expected a number like "001"): ${JSON.stringify(id)}`);
   return parseInt(s, 10);
+}
+
+// Queue tools accept EITHER an absolute project_path (local mode, unchanged)
+// OR a server-managed project name resolved through the hosted registry.
+function resolveProjectDir(args) {
+  const name = requireString(args, 'project', { optional: true });
+  if (name !== undefined) {
+    const dir = libCall(() => projectRegistry.resolveProject(name).dir);
+    return validateProjectPath(dir);
+  }
+  if (!args?.project_path) throw fail('one of project_path (absolute path) or project (registry name) is required');
+  return validateProjectPath(args.project_path);
+}
+
+// Admin tools exist only in hosted mode, where the HTTP transport put the
+// authenticated caller on the context (context.user is null over stdio).
+function requireAdmin(context) {
+  if (!context?.user) {
+    throw fail('hosted mode only — this tool needs an authenticated admin (serve via server/mcp-http.js)');
+  }
+  if (context.user.role !== 'admin') {
+    throw fail(`admin required — user "${context.user.username}" has role "${context.user.role}"`);
+  }
+}
+
+// Store-layer errors (unknown user, duplicate project, …) are expected
+// operator mistakes, not server bugs — mark them so they aren't stack-logged.
+function libCall(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    throw fail(err.message);
+  }
 }
 
 function requireString(args, key, { optional = false } = {}) {
@@ -460,7 +497,7 @@ hand-rolled file operations.
 // ---------------------------------------------------------------------------
 
 function attachWorkflow(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const projectName = requireString(args, 'project_name', { optional: true }) || path.basename(projectPath);
   const verifyCommand = requireString(args, 'verify_command', { optional: true });
   const appUrl = requireString(args, 'app_url', { optional: true });
@@ -533,7 +570,7 @@ function attachWorkflow(args) {
 }
 
 function queueStatus(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const counts = {};
   const items = {};
   for (const status of STATUSES) {
@@ -545,7 +582,7 @@ function queueStatus(args) {
 }
 
 function createWorkItem(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const title = requireString(args, 'title');
   const type = requireString(args, 'type');
   const priority = requireString(args, 'priority');
@@ -608,7 +645,7 @@ function createWorkItem(args) {
 }
 
 function claimNextItem(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const pending = listItems(projectPath, 'pending');
   if (pending.length === 0) {
     throw fail(`nothing to claim: work-items/pending/ is empty in ${projectPath}`);
@@ -628,7 +665,7 @@ function claimNextItem(args) {
 }
 
 function completeItem(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const num = normalizeId(args.id);
   const what = requireString(args, 'what_changed');
   const verification = requireString(args, 'verification');
@@ -651,7 +688,7 @@ function completeItem(args) {
 }
 
 function blockItem(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const num = normalizeId(args.id);
   const reason = requireString(args, 'reason');
 
@@ -672,7 +709,7 @@ function blockItem(args) {
 }
 
 function getItem(args) {
-  const projectPath = validateProjectPath(args.project_path);
+  const projectPath = resolveProjectDir(args);
   const found = findItem(projectPath, args.id);
   if (!found) throw fail(`item ${args.id} not found in any status folder`);
   return {
@@ -699,7 +736,19 @@ function hasQueue(projectDir) {
   return isDir(wi) && STATUSES.some((s) => isDir(path.join(wi, s)));
 }
 
-function listProjects() {
+function listProjects(args, context) {
+  // Hosted mode: the server-managed registry is the source of truth —
+  // non-archived projects only, each with its queue counts.
+  if (context?.user) {
+    return {
+      registry: projectRegistry.REGISTRY_PATH,
+      projects: libCall(() => projectRegistry.listRegistry()).map((p) => {
+        const counts = {};
+        for (const status of STATUSES) counts[status] = listItems(p.dir, status).length;
+        return { name: p.name, gitUrl: p.gitUrl, createdBy: p.createdBy, createdAt: p.createdAt, path: p.dir, has_queue: hasQueue(p.dir), counts };
+      }),
+    };
+  }
   const configPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : EXAMPLE_CONFIG_PATH;
   // Relative paths in the config resolve against the config file's directory,
   // mirroring the cockpit — the shipped example points at examples/demo-project.
@@ -751,13 +800,62 @@ function listProjects() {
 }
 
 // ---------------------------------------------------------------------------
+// Admin tools (hosted mode only — see requireAdmin)
+// ---------------------------------------------------------------------------
+
+function createProjectTool(args, context) {
+  requireAdmin(context);
+  const name = requireString(args, 'name');
+  const gitUrl = requireString(args, 'git_url', { optional: true });
+  const { project, dir } = libCall(() =>
+    projectRegistry.createProject({ name, gitUrl, createdBy: context.user.username })
+  );
+  const scaffold = attachWorkflow({ project_path: dir, project_name: name });
+  return { ...project, path: dir, scaffold: { created: scaffold.created, instructions: scaffold.instructions } };
+}
+
+function archiveProjectTool(args, context) {
+  requireAdmin(context);
+  const name = requireString(args, 'name');
+  const project = libCall(() => projectRegistry.archiveProject(name));
+  return { ...project, note: 'archived — hidden from lists; files kept on disk' };
+}
+
+function createUserTool(args, context) {
+  requireAdmin(context);
+  const username = requireString(args, 'username');
+  const email = requireString(args, 'email', { optional: true }) || '';
+  const role = requireString(args, 'role');
+  const { user, token } = libCall(() => usersLib.createUser({ username, email, role }));
+  return { user, token, note: 'This token is shown ONCE (stored only as a hash) — pass it to the user now.' };
+}
+
+function revokeUserTool(args, context) {
+  requireAdmin(context);
+  const username = requireString(args, 'username');
+  const user = libCall(() => usersLib.revokeUser(username));
+  return { user, note: 'token revoked — issue a new one with rotate_token' };
+}
+
+function rotateTokenTool(args, context) {
+  requireAdmin(context);
+  const username = requireString(args, 'username');
+  const token = libCall(() => usersLib.rotateToken(username));
+  return { username, token, note: 'This token is shown ONCE (stored only as a hash) — the old token is now invalid.' };
+}
+
+// ---------------------------------------------------------------------------
 // Tool + prompt registry
 // ---------------------------------------------------------------------------
 
 const PROJECT_PATH_PROP = {
   project_path: {
     type: 'string',
-    description: 'Absolute path to the project root (the directory that contains, or will contain, work-items/)',
+    description: 'Absolute path to the project root (the directory that contains, or will contain, work-items/). Local mode; alternative to `project`.',
+  },
+  project: {
+    type: 'string',
+    description: 'Name of a server-managed project from the hosted registry — alternative to project_path.',
   },
 };
 
@@ -780,14 +878,14 @@ const TOOLS = [
           description: 'URL of the running app for live verification (e.g. http://localhost:5173); omit if the project has no live app',
         },
       },
-      required: ['project_path'],
+      required: [],
     },
     handler: attachWorkflow,
   },
   {
     name: 'queue_status',
     description: 'Per-status counts plus {id, title, file} lists for a project’s work-item queue.',
-    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP }, required: ['project_path'] },
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP }, required: [] },
     handler: queueStatus,
   },
   {
@@ -819,7 +917,7 @@ const TOOLS = [
         verify_command: { type: 'string', description: 'Override the verify command for the standard trailing criterion' },
         app_url: { type: 'string', description: 'Override the app URL for the standard trailing criterion' },
       },
-      required: ['project_path', 'title', 'type', 'priority', 'summary', 'scope', 'acceptance_criteria'],
+      required: ['title', 'type', 'priority', 'summary', 'scope', 'acceptance_criteria'],
     },
     handler: createWorkItem,
   },
@@ -827,7 +925,7 @@ const TOOLS = [
     name: 'claim_next_item',
     description:
       'Claim the lowest-numbered pending item: moves it to in-progress/ (git mv when the project is a git repo — that is the lock) and returns its full markdown. Errors when pending/ is empty.',
-    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP }, required: ['project_path'] },
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP }, required: [] },
     handler: claimNextItem,
   },
   {
@@ -843,7 +941,7 @@ const TOOLS = [
         what_changed: { type: 'string', description: 'What was changed, concretely' },
         verification: { type: 'string', description: 'How it was verified (command output, live-app checks)' },
       },
-      required: ['project_path', 'id', 'what_changed', 'verification'],
+      required: ['id', 'what_changed', 'verification'],
     },
     handler: completeItem,
   },
@@ -858,7 +956,7 @@ const TOOLS = [
         id: { type: 'string', description: 'Item number (e.g. "002")' },
         reason: { type: 'string', description: 'Why the item cannot proceed / what input is needed' },
       },
-      required: ['project_path', 'id', 'reason'],
+      required: ['id', 'reason'],
     },
     handler: blockItem,
   },
@@ -868,16 +966,78 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: { ...PROJECT_PATH_PROP, id: { type: 'string', description: 'Item number (e.g. "014")' } },
-      required: ['project_path', 'id'],
+      required: ['id'],
     },
     handler: getItem,
   },
   {
     name: 'list_projects',
     description:
-      'All projects tracked by the cockpit (explicit projects.json list + auto-discovered work-items/ queues under autoDiscoverRoots), each with its path and per-status counts.',
+      'All tracked projects with per-status counts. Local mode: the cockpit view (explicit projects.json list + auto-discovered work-items/ queues under autoDiscoverRoots). Hosted mode: the server-managed registry (non-archived projects).',
     inputSchema: { type: 'object', properties: {} },
     handler: listProjects,
+  },
+  {
+    name: 'create_project',
+    description:
+      'ADMIN, hosted mode only: create a server-managed project at data/projects/<name> — clones git_url when given, else git init + an initial commit — then scaffolds the work-item queue (attach_workflow). Members operate it via the `project` name afterwards.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Project name, [a-z0-9-_]{2,32} — doubles as the directory name' },
+        git_url: { type: 'string', description: 'Optional git URL to clone; omit for a fresh empty repo' },
+      },
+      required: ['name'],
+    },
+    handler: createProjectTool,
+  },
+  {
+    name: 'archive_project',
+    description:
+      'ADMIN, hosted mode only: archive a server-managed project — hides it from list_projects and name resolution. Files are never deleted.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Registry name of the project to archive' } },
+      required: ['name'],
+    },
+    handler: archiveProjectTool,
+  },
+  {
+    name: 'create_user',
+    description:
+      'ADMIN, hosted mode only: create a user and return their API token. The token appears ONCE in this result (stored only as a hash) — pass it to the user immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        username: { type: 'string', description: 'Username, [a-z0-9-_]{2,32}, unique' },
+        email: { type: 'string', description: 'Contact email (optional)' },
+        role: { type: 'string', enum: ['admin', 'member'] },
+      },
+      required: ['username', 'role'],
+    },
+    handler: createUserTool,
+  },
+  {
+    name: 'revoke_user',
+    description:
+      'ADMIN, hosted mode only: invalidate a user’s API token (deletes its hash). The user stays in the registry; issue a fresh token with rotate_token.',
+    inputSchema: {
+      type: 'object',
+      properties: { username: { type: 'string', description: 'User whose token to revoke' } },
+      required: ['username'],
+    },
+    handler: revokeUserTool,
+  },
+  {
+    name: 'rotate_token',
+    description:
+      'ADMIN, hosted mode only: issue a user a new API token, invalidating the old one. The new token appears ONCE in this result.',
+    inputSchema: {
+      type: 'object',
+      properties: { username: { type: 'string', description: 'User whose token to rotate' } },
+      required: ['username'],
+    },
+    handler: rotateTokenTool,
   },
 ];
 
